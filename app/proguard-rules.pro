@@ -1,0 +1,3 @@
+-keep class com.streamtv.app.** { *; }
+-keepclassmembers class * extends android.webkit.WebViewClient { *; }
+-keepclassmembers class * extends android.webkit.WebChromeClient { *; }

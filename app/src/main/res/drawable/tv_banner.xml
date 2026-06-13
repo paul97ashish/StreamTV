@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- TV launcher banner: replace with a 320x180dp PNG for production -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <gradient
+        android:startColor="#0d1b2a"
+        android:endColor="#1b4332"
+        android:angle="0" />
+</shape>
