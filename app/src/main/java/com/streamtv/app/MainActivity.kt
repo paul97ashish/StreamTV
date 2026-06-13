@@ -343,8 +343,12 @@ class MainActivity : AppCompatActivity() {
                 referer?.let { setRequestProperty("Referer", it) }
                 // Forward cookies from the WebView cookie store
                 CookieManager.getInstance().getCookie(url)?.let { setRequestProperty("Cookie", it) }
+                // Forward original request headers, EXCEPT Accept-Encoding: if we set it
+                // ourselves, HttpURLConnection stops transparently decompressing the
+                // response, and we'd hand WebView a gzipped body it can't decode.
+                val skipHeaders = setOf("cookie", "user-agent", "referer", "host", "accept-encoding")
                 request.requestHeaders?.forEach { (k, v) ->
-                    if (k !in listOf("Cookie", "User-Agent", "Referer", "Host")) {
+                    if (k != null && k.lowercase() !in skipHeaders) {
                         try { setRequestProperty(k, v) } catch (ignored: Exception) {}
                     }
                 }
@@ -536,22 +540,27 @@ class MainActivity : AppCompatActivity() {
 
     override fun onPause() {
         super.onPause()
-        webView.onPause()
-        CookieManager.getInstance().flush()
+        // Guard: webView may be uninitialized if buildWebView() failed in onCreate.
+        if (::webView.isInitialized) {
+            webView.onPause()
+            CookieManager.getInstance().flush()
+        }
     }
 
     override fun onResume() {
         super.onResume()
-        webView.onResume()
+        if (::webView.isInitialized) webView.onResume()
     }
 
     override fun onDestroy() {
-        webView.apply {
-            stopLoading()
-            clearHistory()
-            clearCache(true)
-            loadUrl("about:blank")
-            destroy()
+        if (::webView.isInitialized) {
+            webView.apply {
+                stopLoading()
+                clearHistory()
+                clearCache(true)
+                loadUrl("about:blank")
+                destroy()
+            }
         }
         super.onDestroy()
     }
