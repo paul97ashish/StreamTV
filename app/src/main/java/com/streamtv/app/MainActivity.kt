@@ -88,6 +88,62 @@ class MainActivity : AppCompatActivity() {
                     Object.defineProperty(window, 'frameElement', { get: function() { return null; }, configurable: true });
                 } catch(e) {}
 
+                // --- 0.5 Strip sandbox attrs so players don't refuse to load ---
+                // Players show "remove sandbox attributes on the iframe tag" when
+                // their host iframe is sandboxed. Remove it and reload the frame.
+                (function() {
+                    function unsandbox(ifr) {
+                        try {
+                            if (ifr && ifr.tagName === 'IFRAME' && ifr.hasAttribute('sandbox')) {
+                                ifr.removeAttribute('sandbox');
+                                var src = ifr.getAttribute('src');
+                                // Reload once per src so the frame re-inits unsandboxed.
+                                if (src && ifr.getAttribute('data-tvb-reloaded') !== src) {
+                                    ifr.setAttribute('data-tvb-reloaded', src);
+                                    ifr.src = src;
+                                }
+                            }
+                        } catch(e2) {}
+                    }
+                    // Block sandbox from ever being applied to JS-created iframes.
+                    try {
+                        var origSet = Element.prototype.setAttribute;
+                        Element.prototype.setAttribute = function(name, value) {
+                            if (this.tagName === 'IFRAME' && String(name).toLowerCase() === 'sandbox') return;
+                            return origSet.call(this, name, value);
+                        };
+                    } catch(e3) {}
+                    // Strip any already in the DOM.
+                    try {
+                        var list = document.querySelectorAll('iframe[sandbox]');
+                        for (var i = 0; i < list.length; i++) unsandbox(list[i]);
+                    } catch(e4) {}
+                    // Catch dynamically added / re-sandboxed iframes.
+                    try {
+                        var mo = new MutationObserver(function(muts) {
+                            for (var i = 0; i < muts.length; i++) {
+                                var m = muts[i];
+                                if (m.type === 'attributes' && m.target && m.target.tagName === 'IFRAME') {
+                                    unsandbox(m.target);
+                                } else if (m.addedNodes) {
+                                    for (var j = 0; j < m.addedNodes.length; j++) {
+                                        var n = m.addedNodes[j];
+                                        if (n.tagName === 'IFRAME') unsandbox(n);
+                                        else if (n.querySelectorAll) {
+                                            var inner = n.querySelectorAll('iframe[sandbox]');
+                                            for (var k = 0; k < inner.length; k++) unsandbox(inner[k]);
+                                        }
+                                    }
+                                }
+                            }
+                        });
+                        mo.observe(document.documentElement, {
+                            childList: true, subtree: true,
+                            attributes: true, attributeFilter: ['sandbox']
+                        });
+                    } catch(e5) {}
+                })();
+
                 // --- 1. CSS: hide common ad containers ---
                 var style = document.createElement('style');
                 style.id = '__tvblock_style';
