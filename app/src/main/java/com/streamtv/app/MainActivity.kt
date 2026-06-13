@@ -246,7 +246,11 @@ class MainActivity : AppCompatActivity() {
                         Regex(".*\\.(js|css|png|jpe?g|gif|svg|woff2?|ttf|eot|ico|mp4|m3u8|ts|vtt|json|xml)(\\?.*)?$")
                     )
                     if (!isStaticAsset) {
-                        return fetchStrippingFrameHeaders(url, request, view.url)
+                        // Do NOT call view.url here — shouldInterceptRequest runs on a
+                        // background thread and WebView methods must be on the main thread.
+                        // The Referer is already present in the request headers.
+                        val referer = request.requestHeaders?.get("Referer")
+                        return fetchStrippingFrameHeaders(url, request, referer)
                     }
                 }
 
@@ -341,7 +345,7 @@ class MainActivity : AppCompatActivity() {
                 CookieManager.getInstance().getCookie(url)?.let { setRequestProperty("Cookie", it) }
                 request.requestHeaders?.forEach { (k, v) ->
                     if (k !in listOf("Cookie", "User-Agent", "Referer", "Host")) {
-                        try { setRequestProperty(k, v) } catch (_: Exception) {}
+                        try { setRequestProperty(k, v) } catch (ignored: Exception) {}
                     }
                 }
             }
@@ -367,7 +371,7 @@ class MainActivity : AppCompatActivity() {
 
             val body = if (code < 400) conn.inputStream else (conn.errorStream ?: "".byteInputStream())
             WebResourceResponse(mime, charset, code, "OK", responseHeaders, body)
-        } catch (_: Exception) {
+        } catch (ignored: Exception) {
             null // fall back to WebView's default handling
         }
     }
