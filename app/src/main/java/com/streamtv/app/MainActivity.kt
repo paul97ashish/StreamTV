@@ -40,7 +40,17 @@ class MainActivity : AppCompatActivity() {
     private var lastKeyCode = 0
     private var repeatCount = 0
 
+    // Registrable host the main frame is pinned to. Top-level navigations to any
+    // other host are treated as pop-under/redirect ads and cancelled.
+    private var primaryHost: String? = null
+    private var lastBlockToast = 0L
+
     companion object {
+        private const val START_URL = "https://crack-streams.cx/"
+        // Extra registrable hosts allowed in the main frame besides the primary
+        // site (e.g. known mirrors). Players load in iframes and are unaffected.
+        private val ALLOWED_EXTRA_HOSTS = setOf("crckstreams.ch", "crackstreams.cx")
+
         // Known ad/tracking domains to block at the network level
         private val BLOCKED_DOMAINS = listOf(
             // Ad networks
@@ -64,6 +74,8 @@ class MainActivity : AppCompatActivity() {
             "popads.net", "popcash.net", "pop-ads.net",
             "trafficjunky.net", "trafficforce.com", "hilltopads.net",
             "yllix.com", "clickbooth.com", "plugrush.com",
+            "championshipgirlie.com", "onclickalgo.com", "onclckmn.com",
+            "highperformanceformat.com", "effectiveratecpm.com",
             // Trackers
             "scorecardresearch.com", "quantserve.com",
             "omtrdc.net", "demdex.net", "everesttech.net",
@@ -246,7 +258,7 @@ class MainActivity : AppCompatActivity() {
             updateCursorPosition()
         }
 
-        webView.loadUrl("https://crack-streams.cx/")
+        webView.loadUrl(START_URL)
     }
 
     // ─── WebView setup ────────────────────────────────────────────────────────
@@ -314,12 +326,35 @@ class MainActivity : AppCompatActivity() {
             }
 
             override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
-                val scheme = request.url.scheme ?: ""
+                val url = request.url
+                val scheme = url.scheme ?: ""
                 // Block non-web schemes (intent://, market://, etc.) used by ads
-                return scheme != "http" && scheme != "https"
+                if (scheme != "http" && scheme != "https") return true
+
+                // Pop-under / on-click redirect ads navigate the TOP window to a
+                // foreign domain. Real players load inside iframes (not the main
+                // frame), so we pin the main frame to the streaming site and cancel
+                // any off-site top-level navigation. (runs on the UI thread)
+                if (request.isForMainFrame) {
+                    val host = url.host?.lowercase().orEmpty()
+                    val pinned = primaryHost
+                    if (pinned != null && host.isNotEmpty() && !hostAllowedInMainFrame(host, pinned)) {
+                        notifyBlockedPopup()
+                        return true
+                    }
+                }
+                return false
             }
 
             override fun onPageFinished(view: WebView, url: String) {
+                // Pin to the first real host we land on. This runs after the site's
+                // own initial redirects, so legitimate mirror hops aren't blocked,
+                // but later on-click ad redirects are.
+                if (primaryHost == null) {
+                    android.net.Uri.parse(url).host?.lowercase()
+                        ?.takeIf { it.isNotEmpty() }
+                        ?.let { primaryHost = registrable(it) }
+                }
                 injectAdBlockJs(view)
             }
         }
@@ -374,6 +409,27 @@ class MainActivity : AppCompatActivity() {
 
     private fun injectAdBlockJs(view: WebView) {
         view.evaluateJavascript(AD_BLOCK_JS, null)
+    }
+
+    /** Reduces a host to its registrable domain (approx. last two labels). */
+    private fun registrable(host: String): String {
+        val parts = host.split(".")
+        return if (parts.size >= 2) parts.takeLast(2).joinToString(".") else host
+    }
+
+    /** True if [host] may load in the main frame given the [pinned] registrable host. */
+    private fun hostAllowedInMainFrame(host: String, pinned: String): Boolean {
+        if (ALLOWED_EXTRA_HOSTS.any { host == it || host.endsWith(".$it") }) return true
+        return registrable(host) == pinned
+    }
+
+    /** Brief, throttled confirmation that a pop-up/redirect was blocked. */
+    private fun notifyBlockedPopup() {
+        val now = SystemClock.uptimeMillis()
+        if (now - lastBlockToast > 2500) {
+            lastBlockToast = now
+            android.widget.Toast.makeText(this, "Blocked pop-up", android.widget.Toast.LENGTH_SHORT).show()
+        }
     }
 
     /**
