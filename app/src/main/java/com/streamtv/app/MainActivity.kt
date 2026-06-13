@@ -13,6 +13,8 @@ import android.webkit.*
 import android.widget.FrameLayout
 import android.widget.ProgressBar
 import androidx.appcompat.app.AppCompatActivity
+import java.net.HttpURLConnection
+import java.net.URL
 
 class MainActivity : AppCompatActivity() {
 
@@ -74,6 +76,17 @@ class MainActivity : AppCompatActivity() {
         private val AD_BLOCK_JS = """
             (function() {
                 'use strict';
+
+                // --- 0. Spoof iframe-detection so players don't refuse to run ---
+                // Many player pages check window.top !== window.self and bail out.
+                try {
+                    ['top', 'parent', 'self'].forEach(function(k) {
+                        try {
+                            Object.defineProperty(window, k, { get: function() { return window; }, configurable: true });
+                        } catch(e2) {}
+                    });
+                    Object.defineProperty(window, 'frameElement', { get: function() { return null; }, configurable: true });
+                } catch(e) {}
 
                 // --- 1. CSS: hide common ad containers ---
                 var style = document.createElement('style');
@@ -217,11 +230,26 @@ class MainActivity : AppCompatActivity() {
 
         webView.webViewClient = object : WebViewClient() {
             override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? {
-                val url = request.url.toString().lowercase()
+                val url = request.url.toString()
+                val urlLower = url.lowercase()
+
                 // Block known ad domains
-                if (BLOCKED_DOMAINS.any { url.contains(it) }) {
+                if (BLOCKED_DOMAINS.any { urlLower.contains(it) }) {
                     return WebResourceResponse("text/plain", "utf-8", "".byteInputStream())
                 }
+
+                // For iframe (non-main-frame) document requests, re-fetch the response
+                // ourselves and strip X-Frame-Options / CSP frame restrictions so that
+                // embedded video players aren't blocked by the WebView.
+                if (!request.isForMainFrame) {
+                    val isStaticAsset = urlLower.matches(
+                        Regex(".*\\.(js|css|png|jpe?g|gif|svg|woff2?|ttf|eot|ico|mp4|m3u8|ts|vtt|json|xml)(\\?.*)?$")
+                    )
+                    if (!isStaticAsset) {
+                        return fetchStrippingFrameHeaders(url, request, view.url)
+                    }
+                }
+
                 return null
             }
 
@@ -286,6 +314,62 @@ class MainActivity : AppCompatActivity() {
 
     private fun injectAdBlockJs(view: WebView) {
         view.evaluateJavascript(AD_BLOCK_JS, null)
+    }
+
+    /**
+     * Fetches a URL using HttpURLConnection and returns a WebResourceResponse
+     * with X-Frame-Options and Content-Security-Policy headers stripped.
+     * This allows video player pages embedded in iframes to load in WebView
+     * even when the player domain explicitly denies framing.
+     */
+    private fun fetchStrippingFrameHeaders(
+        url: String,
+        request: WebResourceRequest,
+        referer: String?
+    ): WebResourceResponse? {
+        return try {
+            val conn = (URL(url).openConnection() as HttpURLConnection).apply {
+                connectTimeout = 15_000
+                readTimeout = 30_000
+                instanceFollowRedirects = true
+                setRequestProperty(
+                    "User-Agent",
+                    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                )
+                referer?.let { setRequestProperty("Referer", it) }
+                // Forward cookies from the WebView cookie store
+                CookieManager.getInstance().getCookie(url)?.let { setRequestProperty("Cookie", it) }
+                request.requestHeaders?.forEach { (k, v) ->
+                    if (k !in listOf("Cookie", "User-Agent", "Referer", "Host")) {
+                        try { setRequestProperty(k, v) } catch (_: Exception) {}
+                    }
+                }
+            }
+            conn.connect()
+
+            val code = conn.responseCode
+            val rawMime = conn.contentType ?: "text/html"
+            val mime = rawMime.split(";").first().trim()
+            val charset = Regex("charset=([^;\\s]+)", RegexOption.IGNORE_CASE)
+                .find(rawMime)?.groupValues?.getOrNull(1) ?: "utf-8"
+
+            // Strip only the headers that block iframe embedding
+            val stripHeaders = setOf(
+                "x-frame-options", "content-security-policy",
+                "x-content-security-policy", "frame-options"
+            )
+            val responseHeaders = mutableMapOf<String, String>()
+            conn.headerFields.forEach { (k, vs) ->
+                if (k != null && k.lowercase() !in stripHeaders && vs.isNotEmpty()) {
+                    responseHeaders[k] = vs.last()
+                }
+            }
+
+            val body = if (code < 400) conn.inputStream else (conn.errorStream ?: "".byteInputStream())
+            WebResourceResponse(mime, charset, code, "OK", responseHeaders, body)
+        } catch (_: Exception) {
+            null // fall back to WebView's default handling
+        }
     }
 
     // ─── Progress bar ─────────────────────────────────────────────────────────
